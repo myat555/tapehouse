@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Tapehouse</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand"><span class="reel" aria-hidden="true"></span>Tapehouse</div>
+    <input id="projName" class="projname" value="Untitled" aria-label="Project name" spellcheck="false">
+    <div class="filegroup">
+      <button id="bNew" class="act">New</button>
+      <button id="bOpen" class="act" title="Open a .tapehouse project (⌘O)">Open</button>
+      <button id="bSave" class="act" title="Download the project with its audio (⌘S)">Save</button>
+      <button id="bExport" class="act" title="Render the whole mix to a 24-bit WAV">Export WAV</button>
+      <input id="projFile" type="file" accept=".tapehouse,.json" hidden>
+    </div>
+    <div class="spacer"></div>
+    <button id="bAddTrack" class="act">+ Track</button>
+    <button id="bAddBus" class="act">+ Bus</button>
+    <button id="bImport" class="act">Import audio</button>
+    <input id="file" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.aif,.aiff,.opus" multiple hidden>
+    <button id="bMixer" class="act tog" aria-pressed="true" title="Show mixer (M)">Mixer</button>
+  </header>
+
+  <div class="transport">
+    <div class="tgroup">
+      <button id="bHome" class="tb" title="Go to start (Home)" aria-label="Go to start"><svg viewBox="0 0 16 16"><path d="M2 2h2v12H2zM14 2v12L5 8z"/></svg></button>
+      <button id="bPlay" class="tb play" title="Play / stop (Space)" aria-label="Play"><svg viewBox="0 0 16 16"><path d="M3 2l11 6-11 6z"/></svg></button>
+      <button id="bStop" class="tb" title="Stop (press twice to return to start)" aria-label="Stop"><svg viewBox="0 0 16 16"><path d="M3 3h10v10H3z"/></svg></button>
+      <button id="bRec" class="tb rec" title="Record onto armed tracks (R)" aria-label="Record" aria-pressed="false"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/></svg></button>
+      <button id="bLoop" class="tb tog" title="Loop (L)" aria-label="Loop" aria-pressed="true"><svg viewBox="0 0 16 16"><path d="M4 5h7V3l3 3-3 3V7H4a1 1 0 0 0-1 1v1H1V8a3 3 0 0 1 3-3zm8 6H5v2l-3-3 3-3v2h7a1 1 0 0 0 1-1V8h2v1a3 3 0 0 1-3 2z"/></svg></button>
+      <button id="bMetro" class="tb tog" title="Metronome (C)" aria-label="Metronome" aria-pressed="false"><svg viewBox="0 0 16 16"><path d="M6 1h4l3.5 14h-11zm1.4 2L5 13h6.4l-.6-2.6L13 5l-1-.8-1.6 4L9 3z"/></svg></button>
+    </div>
+    <div class="clock"><span class="big" id="tBars">1.1.00</span><span class="small" id="tTime">0:00.000</span></div>
+    <label class="field">BPM <input id="bpm" type="number" min="40" max="240" step="1" value="112"></label>
+    <label class="field zoomf">Zoom <input id="zoom" type="range" min="8" max="300" step="1" value="44"></label>
+    <button id="bSnap" class="act tog" aria-pressed="true" title="Snap clip edits to the beat grid">Snap</button>
+    <label class="field" title="Extra latency compensation for recorded takes. Raise it if takes land late; lower it if they land early.">Rec offset <input id="recOffset" type="number" min="-500" max="500" step="1" value="0"> ms</label>
+  </div>
+
+  <main class="arrange">
+    <div class="scroller" id="scroller">
+      <div class="content" id="content">
+        <div class="ruler-row">
+          <div class="corner" id="corner"><span>Tracks</span><span id="trkCount">0</span></div>
+          <div class="ruler" id="ruler"></div>
+        </div>
+        <div id="rows"></div>
+        <div class="row addrow">
+          <div class="head"><button class="act" id="bAddTrack2">+ Add track</button></div>
+          <div class="lane droplane" id="dropLane">Drop audio files here to put each one on a new track, or drop a .tapehouse file to open it.</div>
+        </div>
+        <div class="overlay"><div class="loopshade" id="loopShade"></div><div class="playhead" id="playhead"></div></div>
+      </div>
+    </div>
+  </main>
+
+  <section class="mixer" id="mixer" aria-label="Mixer">
+    <div class="mgrip" id="mgrip" title="Drag to resize the mixer"></div>
+    <div class="strips" id="strips"></div>
+  </section>
+
+  <footer class="status">
+    <span class="msg" id="msg">Building the demo session…</span>
+    <span class="hints"><kbd>Space</kbd> play/stop · <kbd>R</kbd> record · <kbd>S</kbd> split · <kbd>⌘D</kbd> duplicate · <kbd>Del</kbd> delete clip · <kbd>⌘S</kbd> save · drag the ruler to set a loop · <kbd>⌘</kbd>+scroll to zoom</span>
+  </footer>
+</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

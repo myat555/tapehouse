@@ -1,0 +1,15 @@
+{
+  "name": "tapehouse",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A multitrack DAW that runs in the browser, built on the Web Audio API.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.3.5"
+  }
+}
