@@ -22,10 +22,12 @@
     </div>
     <div class="spacer"></div>
     <button id="bAddTrack" class="act">+ Track</button>
+    <button id="bAddMidi" class="act" title="Add a synth track with an empty MIDI clip">+ MIDI</button>
     <button id="bAddBus" class="act">+ Bus</button>
     <button id="bImport" class="act">Import audio</button>
     <input id="file" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.aif,.aiff,.opus" multiple hidden>
     <button id="bMixer" class="act tog" aria-pressed="true" title="Show mixer (M)">Mixer</button>
+    <button id="bRoll" class="act tog" aria-pressed="false" title="Show piano roll (E)">Piano roll</button>
   </header>
 
   <div class="transport">
@@ -62,13 +64,29 @@
   </main>
 
   <section class="mixer" id="mixer" aria-label="Mixer">
-    <div class="mgrip" id="mgrip" title="Drag to resize the mixer"></div>
+    <div class="mgrip" id="mgrip" title="Drag to resize"></div>
+    <div class="docktabs" role="tablist">
+      <button id="tabMixer" class="dtab" role="tab" aria-selected="true">Mixer</button>
+      <button id="tabRoll" class="dtab" role="tab" aria-selected="false">Piano roll</button>
+      <span class="rolltitle" id="rollTitle"></span>
+    </div>
     <div class="strips" id="strips"></div>
+    <div class="roll" id="roll" hidden>
+      <div class="rolltools" id="rollTools" hidden></div>
+      <div class="rollempty" id="rollEmpty">Double-click a MIDI clip to edit it here. Double-click an empty spot on a track to create one, or double-click an audio clip to play it from a Sampler.</div>
+      <div class="rollbody" id="rollBody" hidden>
+        <div class="rollmain">
+          <canvas id="rollCanvas"></canvas>
+          <div class="rollscroll" id="rollScroll"><div id="rollSpace"></div></div>
+        </div>
+        <canvas id="velCanvas"></canvas>
+      </div>
+    </div>
   </section>
 
   <footer class="status">
     <span class="msg" id="msg">Building the demo session…</span>
-    <span class="hints"><kbd>Space</kbd> play/stop · <kbd>R</kbd> record · <kbd>S</kbd> split · <kbd>⌘D</kbd> duplicate · <kbd>Del</kbd> delete clip · <kbd>⌘S</kbd> save · drag the ruler to set a loop · <kbd>⌘</kbd>+scroll to zoom</span>
+    <span class="hints"><kbd>Space</kbd> play/stop · <kbd>E</kbd> piano roll · <kbd>R</kbd> record · <kbd>S</kbd> split · <kbd>⌘D</kbd> duplicate · <kbd>Del</kbd> delete clip · <kbd>⌘S</kbd> save · drag the ruler to set a loop · <kbd>⌘</kbd>+scroll to zoom</span>
   </footer>
 </div>
 <script type="module" src="/src/main.js"></script>

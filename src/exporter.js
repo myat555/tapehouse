@@ -1,6 +1,7 @@
 // Offline mixdown: rebuilds the whole mixer graph in an OfflineAudioContext and renders it faster than real time.
 import { S, buffers, allChannels, projectEnd } from './state.js';
 import { SR, createNodes, connectOut, setParams, makeLimiter } from './audio.js';
+import { isMidi, scheduleMidiClip } from './midi.js';
 
 export const TAIL = 3; // seconds of reverb/echo tail after the last clip
 
@@ -18,6 +19,7 @@ export async function renderMix() {
     setParams(o, nodesOf(o), oc, false);
   }
   for (const t of S.tracks) for (const c of t.clips) {
+    if (isMidi(c)) { scheduleMidiClip(oc, nodesOf(t).input, t, c, 0, Infinity, Infinity, 0, () => {}); continue; }
     const b = buffers.get(c.buf); if (!b) continue;
     const src = oc.createBufferSource();
     src.buffer = b.buffer;

@@ -3,9 +3,12 @@ import { S, nid, spb, snapT, fmtBars, trackById } from './state.js';
 import { ctx, addBuffer, addTrack, addBus, makeReturn, newChannel, routeAll, applyAll } from './audio.js';
 import { events, play, stop, seek, restartIfPlaying, startEngine, position, T } from './engine.js';
 import {
-  renderAll, renderTracks, updateLoopUI, setZoom, fitZoom, toggleMixer,
-  startFrameLoop, deleteClip, splitClip, duplicateClip
+  renderAll, renderTracks, updateLoopUI, setZoom, fitZoom, showDock,
+  startFrameLoop, deleteClip, splitClip, duplicateClip, editClip
 } from './ui.js';
+import { rollKey, setRollEditHook } from './pianoroll.js';
+import { newMidiClip, syncMidiDurations } from './midi.js';
+import { newInstrumentState } from './instruments/index.js';
 import { ensureInput, startCapture, stopCapture, setUserOffset } from './recorder.js';
 import { renderMix } from './exporter.js';
 import { encodeWav } from './wav.js';
@@ -83,12 +86,16 @@ $('bLoop').onclick = () => {
 };
 $('bMetro').onclick = () => { S.metro = !S.metro; $('bMetro').setAttribute('aria-pressed', String(S.metro)); restartIfPlaying(); };
 $('bSnap').onclick = () => { S.snap = !S.snap; $('bSnap').setAttribute('aria-pressed', String(S.snap)); };
-$('bMixer').onclick = () => toggleMixer();
+$('bMixer').onclick = () => showDock('mixer');
+$('bRoll').onclick = () => showDock('roll');
+$('tabMixer').onclick = () => showDock('mixer', false);
+$('tabRoll').onclick = () => showDock('roll', false);
+setRollEditHook(() => { renderTracks(); restartIfPlaying(); });
 $('bpm').onchange = e => {
   const v = clamp(Math.round(+e.target.value || S.bpm), 40, 240);
   e.target.value = v;
   const p = position();
-  S.bpm = v; applyAll(); renderTracks();
+  S.bpm = v; syncMidiDurations(); applyAll(); renderTracks();
   if (S.playing) startEngine(p);
   status(`Tempo set to ${v} BPM. Clips keep their positions in time; the grid moves.`);
 };
@@ -107,6 +114,14 @@ const doAddTrack = () => {
 };
 $('bAddTrack').onclick = doAddTrack;
 $('bAddTrack2').onclick = doAddTrack;
+$('bAddMidi').onclick = () => {
+  const t = addTrack(`Synth ${S.tracks.filter(x => x.inst).length + 1}`);
+  t.inst = newInstrumentState('synth');
+  const bar = 4 * spb(), c = newMidiClip(Math.floor(S.pos / bar) * bar, 16);
+  t.clips.push(c);
+  renderAll(); editClip(t, c);
+  status(`Added ${t.name} with a 4-bar MIDI clip. Click in the piano roll to draw notes.`);
+};
 $('bAddBus').onclick = () => { const b = addBus(); renderAll(); status(`Added ${b.name}. Route tracks to it with their output menus.`); };
 
 /* ---------- files ---------- */
@@ -232,6 +247,7 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Escape' || e.key === 'Enter') tg.blur();
     return;
   }
+  if (rollKey(e)) { e.preventDefault(); return; }
   const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
   if (e.key === ' ') { e.preventDefault(); togglePlay(); }
   else if (e.key === 'Delete' || e.key === 'Backspace') { if (S.selClip) { e.preventDefault(); deleteClip(); } }
@@ -241,7 +257,8 @@ document.addEventListener('keydown', e => {
   else if (mod) return;
   else if (k === 's') splitClip();
   else if (k === 'r') $('bRec').click();
-  else if (k === 'm') toggleMixer();
+  else if (k === 'm') showDock('mixer');
+  else if (k === 'e') showDock('roll');
   else if (k === 'l') $('bLoop').click();
   else if (k === 'c') $('bMetro').click();
   else if (e.key === 'Home') { e.preventDefault(); $('bHome').click(); }

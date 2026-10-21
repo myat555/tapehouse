@@ -4,7 +4,7 @@ export const S = {
   pos: 0, playFrom: 0, playing: false, recording: false,
   loop: true, loopStart: 0, loopEnd: 0, metro: false, snap: true,
   tracks: [], buses: [], returns: [], master: null,
-  selTrack: null, selClip: null, mixerOpen: true
+  selTrack: null, selClip: null, mixerOpen: true, dockTab: 'mixer'
 };
 
 // id -> { buffer, name, peaks, norm }

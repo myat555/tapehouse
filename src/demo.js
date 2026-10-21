@@ -1,6 +1,8 @@
 // Demo session: six loops synthesized offline (no sample files), routed through a drum bus and both returns.
 import { S, nid, spb, buffers } from './state.js';
 import { SR, addBuffer, addTrack, addBus, route, applyAll } from './audio.js';
+import { newMidiClip } from './midi.js';
+import { newInstrumentState } from './instruments/index.js';
 
 const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
 const PROG = [
@@ -67,30 +69,19 @@ function padChord(oc, out, t, notes, d) {
     o.connect(pn).connect(lp); o.start(t); o.stop(t + d);
   }
 }
-function pluck(oc, out, t, f) {
-  const o = oc.createOscillator(), lp = oc.createBiquadFilter(), g = oc.createGain();
-  o.type = 'square'; o.frequency.value = f;
-  lp.type = 'lowpass'; lp.frequency.setValueAtTime(3200, t); lp.frequency.exponentialRampToValueAtTime(800, t + 0.14);
-  env(g, t, 0.13, 0.003, 0.17); o.connect(lp).connect(g).connect(out); o.start(t); o.stop(t + 0.2);
-}
-
 export async function buildDemo() {
   const q = spb(), bar = 4 * q, L = 4 * bar;
   const each = fn => { for (let b = 0; b < 4; b++) fn(b, b * bar); };
-  const [kB, sB, hB, bB, pB, aB] = await Promise.all([
+  const [kB, sB, hB, bB, pB] = await Promise.all([
     render(L, (oc, out) => each((b, t0) => [0, 2, 2.75, ...(b === 3 ? [3.5] : [])].forEach(x => kick(oc, out, t0 + x * q, x % 1 ? 0.7 : 1)))),
     render(L, (oc, out) => { const nb = noise(oc); each((b, t0) => [1, 3, ...(b === 3 ? [3.75] : [])].forEach(x => snare(oc, out, t0 + x * q, nb, x % 1 ? 0.35 : 1))); }),
     render(L, (oc, out) => { const nb = noise(oc); each((b, t0) => { for (let i = 0; i < 8; i++) hat(oc, out, t0 + i * q / 2, nb, i % 2 ? 0.32 : 0.16, i === 7 && b === 3 ? 0.22 : 0.045); }); }),
     render(L, (oc, out) => each((b, t0) => [0, 0, 12, 0, 0, 12, 0, 10].forEach((s, i) => bassNote(oc, out, t0 + i * q / 2, mtof(PROG[b].root + s), q / 2 * 0.82)))),
-    render(L, (oc, out) => each((b, t0) => padChord(oc, out, t0, PROG[b].chord, bar))),
-    render(L, (oc, out) => each((b, t0) => {
-      const ch = PROG[b].chord, seq = [ch[0], ch[1], ch[2], ch[0] + 12];
-      for (let i = 0; i < 16; i++) pluck(oc, out, t0 + i * q / 4, mtof(seq[i % 4] + 12));
-    }))
+    render(L, (oc, out) => each((b, t0) => padChord(oc, out, t0, PROG[b].chord, bar)))
   ]);
   const ids = {
     kick: addBuffer(kB, 'Kick'), snare: addBuffer(sB, 'Snare'), hats: addBuffer(hB, 'Hats'),
-    bass: addBuffer(bB, 'Bass Am-F-C-G'), pad: addBuffer(pB, 'Pad chords'), arp: addBuffer(aB, 'Arp 16ths')
+    bass: addBuffer(bB, 'Bass Am-F-C-G'), pad: addBuffer(pB, 'Pad chords')
   };
   const [rev, dly] = S.returns;
   const bus = addBus('Drum Bus');
@@ -109,7 +100,15 @@ export async function buildDemo() {
   mk('Hats', 'hats', [L], { vol: 0.42, pan: 0.22, out: bus.id });
   mk('Bass', 'bass', [0, L], { vol: 0.55, lo: 2 });
   mk('Pad', 'pad', [0, L], { vol: 0.5, hi: -2, sends: { [rev.id]: 0.45 } });
-  mk('Arp', 'arp', [L], { vol: 0.42, pan: -0.2, sends: { [rev.id]: 0.3, [dly.id]: 0.35 } });
+  // The arp is MIDI driving the built-in synth, so it opens in the piano roll.
+  const arp = mk('Arp', null, [], { vol: 0.5, pan: -0.2, sends: { [rev.id]: 0.3, [dly.id]: 0.35 } });
+  arp.inst = newInstrumentState('synth', { wave: 'square', detune: 0, sub: 0, cutoff: 1400, reso: 3, fenv: 0.45, decay: 0.16, sustain: 0, release: 0.08, gain: 0.9 });
+  const notes = [];
+  PROG.forEach(({ chord }, b) => {
+    const seq = [chord[0], chord[1], chord[2], chord[0] + 12];
+    for (let i = 0; i < 16; i++) notes.push({ s: b * 4 + i / 4, d: 0.2, p: seq[i % 4] + 12, v: i % 4 === 0 ? 112 : 84 });
+  });
+  arp.clips.push(newMidiClip(L, 16, notes));
   S.name = 'Demo session';
   S.loop = true; S.loopStart = 0; S.loopEnd = 2 * L;
   applyAll();

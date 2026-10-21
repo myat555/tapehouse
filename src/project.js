@@ -3,6 +3,8 @@ import { S, buffers, reserveIds } from './state.js';
 import { ctx, addBuffer, addTrack, addBus, removeChannel, resetParams, routeAll, applyAll } from './audio.js';
 import { encodeWav } from './wav.js';
 import { stop } from './engine.js';
+import { isMidi, syncMidiDurations } from './midi.js';
+import { getInstrument, newInstrumentState } from './instruments/index.js';
 
 const PARAM_KEYS = ['vol', 'pan', 'lo', 'mid', 'hi', 'comp', 'mute'];
 const pick = o => Object.fromEntries(PARAM_KEYS.filter(k => o && k in o).map(k => [k, o[k]]));
@@ -23,7 +25,7 @@ export function clearSession() {
 }
 
 export async function saveProject() {
-  const used = new Set(S.tracks.flatMap(t => t.clips.map(c => c.buf)));
+  const used = new Set(S.tracks.flatMap(t => [...t.clips.filter(c => !isMidi(c)).map(c => c.buf), t.inst?.params?.buf].filter(Boolean)));
   const audio = {};
   for (const id of used) {
     const b = buffers.get(id);
@@ -39,7 +41,10 @@ export async function saveProject() {
     tracks: S.tracks.map(t => ({
       id: t.id, name: t.name, color: t.color, ...pick(t), solo: t.solo, out: t.out,
       sends: Object.fromEntries(Object.entries(t.sends).map(([k, v]) => [fxOf(k), v]).filter(([k]) => k)),
-      clips: t.clips.map(({ id, buf, start, offset, dur }) => ({ id, buf, start, offset, dur }))
+      inst: t.inst || null,
+      clips: t.clips.map(c => isMidi(c)
+        ? { type: 'midi', id: c.id, start: c.start, off: c.off, beats: c.beats, dur: c.dur, notes: c.notes }
+        : { type: 'audio', id: c.id, buf: c.buf, start: c.start, offset: c.offset, dur: c.dur })
     })),
     audio
   };
@@ -80,7 +85,14 @@ export async function loadProject(file, onProgress) {
       const r = S.returns.find(x => x.fx === fx);
       if (r) tr.sends[r.id] = v;
     }
-    tr.clips = (t.clips || []).filter(c => buffers.has(c.buf)).map(c => ({ ...c }));
+    if (t.inst) {
+      // An instrument this build doesn't have (from a newer version) falls back to the synth.
+      const def = getInstrument(t.inst.type);
+      tr.inst = def ? { type: t.inst.type, params: { ...def.defaults, ...t.inst.params } } : newInstrumentState('synth');
+    }
+    tr.clips = (t.clips || []).filter(c => c.type === 'midi' || buffers.has(c.buf))
+      .map(c => c.type === 'midi' ? { ...c, notes: (c.notes || []).map(n => ({ ...n })) } : { type: 'audio', ...c });
   }
+  syncMidiDurations();
   routeAll(); applyAll();
 }

@@ -2,6 +2,7 @@
 // ~200 ms ahead and stitches loop passes together sample-accurately.
 import { S, buffers, spb, projectEnd } from './state.js';
 import { ctx, clickBus } from './audio.js';
+import { isMidi, scheduleMidiClip } from './midi.js';
 
 const LOOK = 0.2;
 let sources = [], timer = 0;
@@ -16,9 +17,10 @@ export function position() {
   return seg.segPos + Math.max(0, now - seg.segCtx);
 }
 
+// Holds AudioScheduledSourceNodes and instrument voices so Stop can silence everything.
 function keep(src) {
   sources.push(src);
-  src.onended = () => { const i = sources.indexOf(src); if (i >= 0) sources.splice(i, 1); };
+  if (src instanceof AudioScheduledSourceNode) src.onended = () => { const i = sources.indexOf(src); if (i >= 0) sources.splice(i, 1); };
 }
 function click(when, accent) {
   const o = ctx.createOscillator(), g = ctx.createGain();
@@ -32,6 +34,7 @@ function click(when, accent) {
 function scheduleRange(from, to, end, initial) {
   const now = ctx.currentTime;
   for (const t of S.tracks) for (const c of t.clips) {
+    if (isMidi(c)) { scheduleMidiClip(ctx, t.ch.input, t, c, from, to, end, T.segCtx - T.segPos, keep); continue; }
     const cs = c.start, ce = c.start + c.dur;
     if (!((cs >= from && cs < to) || (initial && cs < from && ce > from))) continue;
     const b = buffers.get(c.buf); if (!b) continue;
@@ -52,6 +55,7 @@ function scheduleRange(from, to, end, initial) {
 function pump() {
   if (!S.playing) return;
   const horizon = ctx.currentTime + LOOK;
+  sources = sources.filter(s => !(s.end < ctx.currentTime - 0.1));
   for (let guard = 0; guard < 8; guard++) {
     const looping = S.loop && !S.recording && S.loopEnd - S.loopStart > 0.05 && T.segPos < S.loopEnd;
     const end = looping ? S.loopEnd : Infinity;
@@ -66,7 +70,7 @@ function pump() {
 }
 
 function stopSources() {
-  for (const s of sources) { try { s.stop(); } catch (_) { /* already stopped */ } }
+  for (const s of sources) { try { s.stop(); } catch { /* already stopped */ } }
   sources = [];
 }
 export function startEngine(pos) {

@@ -1,9 +1,13 @@
 // Arrange view (tracks, clips, ruler), mixer strips, and the per-frame playhead/meter loop.
 import { S, buffers, PEAK_RATE, spb, snapT, allChannels, findCh, trackById, findClip, projectEnd, fmtBars, nid } from './state.js';
-import { applyParams, applyAll, route, removeChannel } from './audio.js';
+import { applyParams, applyAll, route, removeChannel, addTrack } from './audio.js';
 import { position, seek, restartIfPlaying } from './engine.js';
 import { inputAnalyser } from './recorder.js';
-import { $, h, svgEl, clamp, status, dbOf, fmtEq, fmtPct, fmtPan, fmtTime } from './util.js';
+import { $, h, clamp, status, dbOf, fmtEq, fmtPct, fmtPan, fmtTime } from './util.js';
+import { knob } from './knob.js';
+import { isMidi, newMidiClip, ensureInstrument, cloneClip } from './midi.js';
+import { getInstrument, newInstrumentState } from './instruments/index.js';
+import { openRoll, blurRoll, rollSync, layout as rollLayout, draw as rollDraw } from './pianoroll.js';
 
 const content = $('content'), rowsEl = $('rows'), ruler = $('ruler'), scroller = $('scroller');
 const loopBar = h('div', { class: 'loopbar' }), rulerHead = h('div', { class: 'rhead' });
@@ -24,6 +28,7 @@ export function renderTracks() {
   renderRuler(W, barPx);
   updateLoopUI();
   for (const el of rowsEl.querySelectorAll('.clip')) drawClip(el);
+  rollSync();
 }
 
 function trackRow(t, i) {
@@ -68,24 +73,27 @@ function routeSelect(o, where) {
   return s;
 }
 
+const clipLabel = (t, c) => isMidi(c) ? `${getInstrument(t.inst?.type)?.name || 'MIDI'} · MIDI` : buffers.get(c.buf)?.name || 'Clip';
 function clipEl(t, c) {
   const el = h('div', {
-    class: 'clip' + (S.selClip === c.id ? ' sel' : ''),
+    class: 'clip' + (isMidi(c) ? ' midi' : '') + (S.selClip === c.id ? ' sel' : ''),
     style: `--c:${t.color};left:${c.start * S.zoom}px;width:${Math.max(3, c.dur * S.zoom)}px`
-  }, h('span', { class: 'cname' }, buffers.get(c.buf)?.name || 'Clip'), h('canvas'),
+  }, h('span', { class: 'cname' }, clipLabel(t, c)), h('canvas'),
   h('i', { class: 'grip l' }), h('i', { class: 'grip r' }));
   el._clip = c; el._track = t;
   return el;
 }
 
 function drawClip(el) {
-  const c = el._clip, b = buffers.get(c.buf); if (!b) return;
+  const c = el._clip;
   const cv = el.querySelector('canvas'), dpr = window.devicePixelRatio || 1;
   const w = Math.max(1, c.dur * S.zoom), hh = cv.clientHeight || 50;
   const W = Math.min(Math.round(w * dpr), 12000), H = Math.round(hh * dpr);
   cv.width = W; cv.height = H;
   const g = cv.getContext('2d');
   g.fillStyle = getComputedStyle(el).getPropertyValue('--c').trim() || '#ccc';
+  if (isMidi(c)) { drawNotes(g, c, W, H); return; }
+  const b = buffers.get(c.buf); if (!b) return;
   const mid = H / 2, pk = b.peaks;
   for (let x = 0; x < W; x++) {
     const t0 = c.offset + (x / W) * c.dur, t1 = c.offset + ((x + 1) / W) * c.dur;
@@ -94,6 +102,19 @@ function drawClip(el) {
     for (let i = i0; i < i1 && i < pk.length; i++) if (pk[i] > m) m = pk[i];
     const a = Math.max(0.5, m * b.norm * mid * 0.92);
     g.fillRect(x, mid - a, 1, a * 2);
+  }
+}
+
+// Mini piano roll inside a MIDI clip, scaled to the clip's pitch range.
+function drawNotes(g, c, W, H) {
+  const vis = c.notes.filter(n => n.s - c.off < c.beats && n.s + n.d > c.off);
+  if (!vis.length) return;
+  let lo = Math.min(...vis.map(n => n.p)), hi = Math.max(...vis.map(n => n.p));
+  if (hi - lo < 11) { const m = (lo + hi) / 2; lo = Math.floor(m - 6); hi = lo + 11; }
+  const rows = hi - lo + 1, rh = Math.max(1, (H - 4) / rows), xb = W / c.beats;
+  for (const n of vis) {
+    const x = (n.s - c.off) * xb, y = 2 + (hi - n.p) * rh;
+    g.fillRect(Math.max(0, x), y, Math.max(2, n.d * xb - 1), Math.max(1.5, rh - 1));
   }
 }
 
@@ -120,6 +141,7 @@ export function markSelection() {
 
 rowsEl.addEventListener('pointerdown', e => {
   const clipE = e.target.closest('.clip');
+  blurRoll();
   if (clipE) { startClipDrag(e, clipE); return; }
   const lane = e.target.closest('.lane');
   if (lane) {
@@ -138,8 +160,9 @@ function startClipDrag(e, el) {
   let dst = src, moved = false;
   S.selClip = c.id; S.selTrack = src.id; markSelection();
   const mode = e.target.classList.contains('l') ? 'l' : e.target.classList.contains('r') ? 'r' : 'm';
-  const x0 = e.clientX, y0 = e.clientY, o = { start: c.start, offset: c.offset, dur: c.dur };
-  const bufDur = buffers.get(c.buf).buffer.duration;
+  const x0 = e.clientX, y0 = e.clientY, o = { start: c.start, offset: c.offset, dur: c.dur, off: c.off, beats: c.beats };
+  const midi = isMidi(c), minDur = midi ? spb() / 16 : 0.02;
+  const bufDur = midi ? Infinity : buffers.get(c.buf).buffer.duration;
   const onMove = ev => {
     if (!moved && Math.abs(ev.clientX - x0) < 3 && Math.abs(ev.clientY - y0) < 3) return;
     if (!moved) { moved = true; el.classList.add('drag'); }
@@ -156,13 +179,16 @@ function startClipDrag(e, el) {
     } else if (mode === 'r') {
       let ne = o.start + o.dur + dt;
       if (S.snap) ne = snapT(ne);
-      c.dur = clamp(ne - o.start, 0.02, bufDur - o.offset);
+      if (midi) { c.beats = Math.max(minDur, ne - o.start) / spb(); c.dur = c.beats * spb(); }
+      else c.dur = clamp(ne - o.start, minDur, bufDur - o.offset);
     } else {
       let ns = o.start + dt;
       if (S.snap) ns = snapT(ns);
-      ns = clamp(ns, Math.max(0, o.start - o.offset), o.start + o.dur - 0.02);
+      ns = clamp(ns, midi ? 0 : Math.max(0, o.start - o.offset), o.start + o.dur - minDur);
       const d = ns - o.start;
-      c.start = ns; c.offset = o.offset + d; c.dur = o.dur - d;
+      c.start = ns;
+      if (midi) { c.off = o.off + d / spb(); c.beats = o.beats - d / spb(); c.dur = c.beats * spb(); }
+      else { c.offset = o.offset + d; c.dur = o.dur - d; }
     }
     el.style.left = c.start * S.zoom + 'px';
     el.style.width = Math.max(3, c.dur * S.zoom) + 'px';
@@ -179,6 +205,44 @@ function startClipDrag(e, el) {
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
   window.addEventListener('pointercancel', onUp);
+}
+
+// Double-click: a MIDI clip opens in the piano roll; an audio clip becomes a Sampler track;
+// empty lane space gets a new one-bar MIDI clip.
+rowsEl.addEventListener('dblclick', e => {
+  const clipE = e.target.closest('.clip');
+  if (clipE) {
+    const { _clip: c, _track: t } = clipE;
+    if (isMidi(c)) editClip(t, c);
+    else samplerFromClip(c);
+    return;
+  }
+  const lane = e.target.closest('.lane[data-id]');
+  if (!lane) return;
+  const t = trackById(lane.dataset.id), bar = 4 * spb();
+  const at = Math.floor((e.clientX - lane.getBoundingClientRect().left) / S.zoom / bar) * bar;
+  ensureInstrument(t);
+  const c = newMidiClip(at, 4);
+  t.clips.push(c); S.selClip = c.id;
+  renderAll(); editClip(t, c);
+  status(`Added a MIDI clip on ${t.name}. Click in the piano roll to draw notes.`);
+});
+
+export function editClip(t, c) {
+  S.selTrack = t.id; S.selClip = c.id; markSelection();
+  showDock('roll', false);
+  openRoll(t, c);
+}
+
+function samplerFromClip(c) {
+  const b = buffers.get(c.buf); if (!b) return;
+  const t = addTrack(`${b.name} sampler`.slice(0, 28));
+  t.inst = newInstrumentState('sampler', { buf: c.buf, root: 60 });
+  const bar = 4 * spb(), start = Math.floor(c.start / bar) * bar;
+  const clip = newMidiClip(start, 4, [{ s: 0, d: 1, p: 60, v: 100 }]);
+  t.clips.push(clip);
+  renderAll(); editClip(t, clip);
+  status(`Made a Sampler track from "${b.name}". C4 plays it at its original pitch; draw notes to play it at other pitches.`);
 }
 
 ruler.addEventListener('pointerdown', e => {
@@ -219,13 +283,19 @@ export function splitClip() {
   if (!f) { status('Select a clip, then press S to split it at the playhead.'); return; }
   const { t, c } = f, p = position();
   if (p <= c.start + 0.01 || p >= c.start + c.dur - 0.01) { status('Move the playhead inside the selected clip to split it.'); return; }
-  t.clips.push({ id: nid('c'), buf: c.buf, start: p, offset: c.offset + (p - c.start), dur: c.start + c.dur - p });
+  if (isMidi(c)) {
+    const rel = (p - c.start) / spb();
+    t.clips.push({ ...cloneClip(c), id: nid('c'), start: p, off: c.off + rel, beats: c.beats - rel, dur: c.dur - (p - c.start) });
+    c.beats = rel;
+  } else {
+    t.clips.push({ id: nid('c'), buf: c.buf, start: p, offset: c.offset + (p - c.start), dur: c.start + c.dur - p });
+  }
   c.dur = p - c.start;
   renderTracks(); restartIfPlaying();
 }
 export function duplicateClip() {
   const f = findClip(S.selClip); if (!f) return;
-  const n = { ...f.c, id: nid('c'), start: f.c.start + f.c.dur };
+  const n = { ...cloneClip(f.c), id: nid('c'), start: f.c.start + f.c.dur };
   f.t.clips.push(n); S.selClip = n.id;
   renderTracks(); restartIfPlaying();
 }
@@ -247,50 +317,6 @@ export function deleteBus(id) {
 }
 
 /* ---------- mixer ---------- */
-function arcPath(cx, cy, r, a0, a1) {
-  const p = a => [cx + r * Math.sin(a), cy - r * Math.cos(a)];
-  const [x0, y0] = p(a0), [x1, y1] = p(a1);
-  return `M${x0.toFixed(2)} ${y0.toFixed(2)}A${r} ${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
-}
-
-function knob({ label, min, max, def, get, set, fmt, bip = false }) {
-  const A = 0.75 * Math.PI;
-  const val = svgEl('path', { class: 'kval' }), ptr = svgEl('line', { x1: 16, y1: 16, x2: 16, y2: 6, class: 'kptr' });
-  const svg = svgEl('svg', { viewBox: '0 0 32 32', class: 'kn' });
-  svg.append(svgEl('path', { class: 'ktrack', d: arcPath(16, 16, 12, -A, A) }), val, ptr);
-  const lab = h('span', { class: 'klab' }, label);
-  const el = h('div', { class: 'knob', tabindex: 0, role: 'slider', 'aria-label': label, 'aria-valuemin': min, 'aria-valuemax': max }, svg, lab);
-  const sync = () => {
-    const v = get(), a = -A + ((v - min) / (max - min)) * 2 * A, a0 = bip ? 0 : -A;
-    val.setAttribute('d', Math.abs(a - a0) < 0.02 ? '' : arcPath(16, 16, 12, Math.min(a0, a), Math.max(a0, a)));
-    ptr.setAttribute('transform', `rotate(${(a * 180 / Math.PI).toFixed(1)} 16 16)`);
-    el.setAttribute('aria-valuenow', v.toFixed(2));
-    el.setAttribute('aria-valuetext', fmt(v));
-    el.title = `${label} ${fmt(v)} · double-click to reset`;
-    lab.textContent = el.classList.contains('active') ? fmt(v) : label;
-  };
-  const put = v => { set(clamp(v, min, max)); sync(); };
-  el.addEventListener('pointerdown', e => {
-    e.preventDefault(); el.focus(); el.setPointerCapture(e.pointerId); el.classList.add('active');
-    const y0 = e.clientY, v0 = get();
-    const mv = ev => put(v0 + (y0 - ev.clientY) / 140 * (max - min) * (ev.shiftKey ? 0.2 : 1));
-    const up = () => {
-      el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up);
-      el.classList.remove('active'); sync();
-    };
-    el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
-    sync();
-  });
-  el.addEventListener('dblclick', () => put(def));
-  el.addEventListener('keydown', e => {
-    const step = (max - min) / 50;
-    if (e.key === 'ArrowUp' || e.key === 'ArrowRight') { e.preventDefault(); put(get() + step); }
-    if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') { e.preventDefault(); put(get() - step); }
-  });
-  sync();
-  return el;
-}
-
 // Fader law: gain = 2·p², so the top of travel is +6 dB and unity sits at p ≈ 0.71.
 const pOfVol = v => Math.sqrt(v / 2), volOfP = p => 2 * p * p;
 function faderBlock(o) {
@@ -332,7 +358,7 @@ function strip(o, num) {
     ? h('div', { class: 'sname' }, 'Master')
     : h('input', { class: 'sname', id: 'sn-' + o.id, value: o.name, 'aria-label': 'Channel name',
         onchange: e => { o.name = e.target.value.trim() || o.name; renderAll(); } });
-  const tag = o.kind === 'track' ? `Track ${num}` : o.kind === 'bus' ? 'Submix bus'
+  const tag = o.kind === 'track' ? `Track ${num}` + (o.inst ? ` · ${getInstrument(o.inst.type)?.name || 'MIDI'}` : '') : o.kind === 'bus' ? 'Submix bus'
     : o.kind === 'return' ? (o.fx === 'reverb' ? 'Return · plate' : 'Return · echo ⅛.') : 'Stereo out';
   const eq = h('div', { class: 'krow' },
     knob({ label: 'LO', min: -12, max: 12, def: 0, bip: true, fmt: fmtEq, get: () => o.lo, set: p('lo') }),
@@ -389,10 +415,17 @@ export function fitZoom() {
   S.zoom = clamp((scroller.clientWidth - headW() - 24) / (span * 1.04), 10, 160);
   $('zoom').value = Math.round(S.zoom);
 }
-export function toggleMixer(force) {
-  S.mixerOpen = force ?? !S.mixerOpen;
+// The bottom dock holds the mixer and the piano roll. Pressing an open tab's button again closes the dock.
+export function showDock(tab, toggle = true) {
+  if (toggle && S.mixerOpen && S.dockTab === tab) S.mixerOpen = false;
+  else { S.mixerOpen = true; S.dockTab = tab; }
   $('mixer').hidden = !S.mixerOpen;
-  $('bMixer').setAttribute('aria-pressed', String(S.mixerOpen));
+  $('strips').hidden = S.dockTab !== 'mixer';
+  $('roll').hidden = S.dockTab !== 'roll';
+  for (const [id, name] of [['tabMixer', 'mixer'], ['tabRoll', 'roll']]) $(id).setAttribute('aria-selected', String(S.dockTab === name));
+  $('bMixer').setAttribute('aria-pressed', String(S.mixerOpen && S.dockTab === 'mixer'));
+  $('bRoll').setAttribute('aria-pressed', String(S.mixerOpen && S.dockTab === 'roll'));
+  if (S.mixerOpen && S.dockTab === 'roll') { rollLayout(); rollDraw(); }
 }
 
 /* ---------- frame loop ---------- */
