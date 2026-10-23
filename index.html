@@ -28,6 +28,7 @@
     <input id="file" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.aif,.aiff,.opus" multiple hidden>
     <button id="bMixer" class="act tog" aria-pressed="true" title="Show mixer (M)">Mixer</button>
     <button id="bRoll" class="act tog" aria-pressed="false" title="Show piano roll (E)">Piano roll</button>
+    <button id="bClip" class="act tog" aria-pressed="false" title="Show the clip editor (W)">Clip</button>
   </header>
 
   <div class="transport">
@@ -41,6 +42,7 @@
     </div>
     <div class="clock"><span class="big" id="tBars">1.1.00</span><span class="small" id="tTime">0:00.000</span></div>
     <label class="field">BPM <input id="bpm" type="number" min="40" max="240" step="1" value="112"></label>
+    <button id="bTempoStretch" class="act tog" aria-pressed="true" title="When the tempo changes, stretch audio clips so they stay on the same bars and beats, without changing pitch">Stretch audio</button>
     <label class="field zoomf">Zoom <input id="zoom" type="range" min="8" max="300" step="1" value="44"></label>
     <button id="bSnap" class="act tog" aria-pressed="true" title="Snap clip edits to the beat grid">Snap</button>
     <label class="field" title="Extra latency compensation for recorded takes. Raise it if takes land late; lower it if they land early.">Rec offset <input id="recOffset" type="number" min="-500" max="500" step="1" value="0"> ms</label>
@@ -68,7 +70,9 @@
     <div class="docktabs" role="tablist">
       <button id="tabMixer" class="dtab" role="tab" aria-selected="true">Mixer</button>
       <button id="tabRoll" class="dtab" role="tab" aria-selected="false">Piano roll</button>
+      <button id="tabClip" class="dtab" role="tab" aria-selected="false">Clip</button>
       <span class="rolltitle" id="rollTitle"></span>
+      <span class="rolltitle" id="ceTitle" hidden></span>
     </div>
     <div class="strips" id="strips"></div>
     <div class="roll" id="roll" hidden>
@@ -82,11 +86,18 @@
         <canvas id="velCanvas"></canvas>
       </div>
     </div>
+    <div class="cedit" id="cedit" hidden>
+      <div class="rollempty" id="ceEmpty">Click an audio clip to see its whole waveform here and shape it: gain, fades, crossfade, reverse, pitch and time stretch.</div>
+      <div class="cebody" id="ceBody" hidden>
+        <div class="rolltools" id="ceTools"></div>
+        <div class="cewave" id="ceWave"><canvas id="ceCanvas"></canvas></div>
+      </div>
+    </div>
   </section>
 
   <footer class="status">
     <span class="msg" id="msg">Building the demo session…</span>
-    <span class="hints"><kbd>Space</kbd> play/stop · <kbd>E</kbd> piano roll · <kbd>R</kbd> record · <kbd>S</kbd> split · <kbd>⌘D</kbd> duplicate · <kbd>Del</kbd> delete clip · <kbd>⌘S</kbd> save · drag the ruler to set a loop · <kbd>⌘</kbd>+scroll to zoom</span>
+    <span class="hints"><kbd>Space</kbd> play/stop · <kbd>E</kbd> piano roll · <kbd>W</kbd> clip editor · <kbd>Alt</kbd>+drag clip edge to stretch · <kbd>R</kbd> record · <kbd>S</kbd> split · <kbd>⌘D</kbd> duplicate · <kbd>Del</kbd> delete clip · <kbd>⌘S</kbd> save · drag the ruler to set a loop · <kbd>⌘</kbd>+scroll to zoom</span>
   </footer>
 </div>
 <script type="module" src="/src/main.js"></script>

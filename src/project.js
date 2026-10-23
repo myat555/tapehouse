@@ -5,6 +5,8 @@ import { encodeWav } from './wav.js';
 import { stop } from './engine.js';
 import { isMidi, syncMidiDurations } from './midi.js';
 import { getInstrument, newInstrumentState } from './instruments/index.js';
+import { AUDIO_KEYS, withAudioDefaults } from './clips.js';
+import { resetStretch } from './stretch.js';
 
 const PARAM_KEYS = ['vol', 'pan', 'lo', 'mid', 'hi', 'comp', 'mute'];
 const pick = o => Object.fromEntries(PARAM_KEYS.filter(k => o && k in o).map(k => [k, o[k]]));
@@ -19,6 +21,7 @@ export function clearSession() {
   for (const o of [...S.tracks, ...S.buses]) removeChannel(o);
   S.tracks = []; S.buses = [];
   buffers.clear();
+  resetStretch();
   for (const o of [...S.returns, S.master]) resetParams(o);
   S.selTrack = S.selClip = null;
   S.pos = S.playFrom = 0;
@@ -33,7 +36,7 @@ export async function saveProject() {
   }
   const fxOf = rid => S.returns.find(r => r.id === rid)?.fx;
   const doc = {
-    app: 'tapehouse', version: 1, name: S.name, bpm: S.bpm, zoom: S.zoom, metro: S.metro, snap: S.snap,
+    app: 'tapehouse', version: 1, name: S.name, bpm: S.bpm, zoom: S.zoom, metro: S.metro, snap: S.snap, stretchTempo: S.stretchTempo,
     loop: { on: S.loop, start: S.loopStart, end: S.loopEnd },
     master: pick(S.master),
     returns: S.returns.map(r => ({ fx: r.fx, ...pick(r) })),
@@ -44,7 +47,7 @@ export async function saveProject() {
       inst: t.inst || null,
       clips: t.clips.map(c => isMidi(c)
         ? { type: 'midi', id: c.id, start: c.start, off: c.off, beats: c.beats, dur: c.dur, notes: c.notes }
-        : { type: 'audio', id: c.id, buf: c.buf, start: c.start, offset: c.offset, dur: c.dur })
+        : { type: 'audio', ...Object.fromEntries(AUDIO_KEYS.map(k => [k, c[k]])) })
     })),
     audio
   };
@@ -72,7 +75,7 @@ export async function loadProject(file, onProgress) {
 
   Object.assign(S, {
     name: doc.name || file.name.replace(/\.[^.]+$/, ''), bpm: doc.bpm || 120, zoom: doc.zoom || 44,
-    metro: !!doc.metro, snap: doc.snap !== false,
+    metro: !!doc.metro, snap: doc.snap !== false, stretchTempo: doc.stretchTempo !== false,
     loop: !!doc.loop?.on, loopStart: doc.loop?.start || 0, loopEnd: doc.loop?.end || 0
   });
   Object.assign(S.master, pick(doc.master));
@@ -91,7 +94,7 @@ export async function loadProject(file, onProgress) {
       tr.inst = def ? { type: t.inst.type, params: { ...def.defaults, ...t.inst.params } } : newInstrumentState('synth');
     }
     tr.clips = (t.clips || []).filter(c => c.type === 'midi' || buffers.has(c.buf))
-      .map(c => c.type === 'midi' ? { ...c, notes: (c.notes || []).map(n => ({ ...n })) } : { type: 'audio', ...c });
+      .map(c => c.type === 'midi' ? { ...c, notes: (c.notes || []).map(n => ({ ...n })) } : withAudioDefaults(c));
   }
   syncMidiDurations();
   routeAll(); applyAll();

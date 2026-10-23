@@ -1,8 +1,9 @@
 // Transport: a lookahead scheduler that queues clip playback and metronome clicks
 // ~200 ms ahead and stitches loop passes together sample-accurately.
-import { S, buffers, spb, projectEnd } from './state.js';
+import { S, spb, projectEnd } from './state.js';
 import { ctx, clickBus } from './audio.js';
 import { isMidi, scheduleMidiClip } from './midi.js';
+import { scheduleAudioClip } from './clips.js';
 
 const LOOK = 0.2;
 let sources = [], timer = 0;
@@ -37,14 +38,8 @@ function scheduleRange(from, to, end, initial) {
     if (isMidi(c)) { scheduleMidiClip(ctx, t.ch.input, t, c, from, to, end, T.segCtx - T.segPos, keep); continue; }
     const cs = c.start, ce = c.start + c.dur;
     if (!((cs >= from && cs < to) || (initial && cs < from && ce > from))) continue;
-    const b = buffers.get(c.buf); if (!b) continue;
     const a = Math.max(cs, from), e = Math.min(ce, end);
-    if (e - a <= 0.001) continue;
-    const src = ctx.createBufferSource();
-    src.buffer = b.buffer; src.connect(t.ch.input);
-    const when = T.segCtx + (a - T.segPos);
-    src.start(Math.max(when, now), c.offset + (a - cs) + Math.max(0, now - when), e - a);
-    keep(src);
+    if (e - a > 0.001) scheduleAudioClip(ctx, t.ch.input, t, c, a, e, T.segCtx + (a - T.segPos), now, keep);
   }
   if (S.metro) {
     const q = spb();

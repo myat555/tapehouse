@@ -1,5 +1,6 @@
 // Demo session: six loops synthesized offline (no sample files), routed through a drum bus and both returns.
-import { S, nid, spb, buffers } from './state.js';
+import { S, spb, buffers } from './state.js';
+import { newAudioClip } from './clips.js';
 import { SR, addBuffer, addTrack, addBus, route, applyAll } from './audio.js';
 import { newMidiClip } from './midi.js';
 import { newInstrumentState } from './instruments/index.js';
@@ -91,7 +92,7 @@ export async function buildDemo() {
     const { sends = {}, ...rest } = opts;
     Object.assign(t, rest);
     Object.assign(t.sends, sends);
-    for (const s of starts) t.clips.push({ id: nid('c'), buf: ids[buf], start: s, offset: 0, dur: buffers.get(ids[buf]).buffer.duration });
+    for (const s of starts) t.clips.push(newAudioClip(ids[buf], s, buffers.get(ids[buf]).buffer.duration));
     route(t);
     return t;
   };

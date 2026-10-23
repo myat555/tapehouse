@@ -8,6 +8,9 @@ import { knob } from './knob.js';
 import { isMidi, newMidiClip, ensureInstrument, cloneClip } from './midi.js';
 import { getInstrument, newInstrumentState } from './instruments/index.js';
 import { openRoll, blurRoll, rollSync, layout as rollLayout, draw as rollDraw } from './pianoroll.js';
+import { openClipEditor, ceSync, layout as ceLayout, draw as ceDraw } from './clipeditor.js';
+import { MIN_RATE, MAX_RATE, fadesOf, envAt, curveOf, dbToGain } from './clips.js';
+import { warmUp } from './stretch.js';
 
 const content = $('content'), rowsEl = $('rows'), ruler = $('ruler'), scroller = $('scroller');
 const loopBar = h('div', { class: 'loopbar' }), rulerHead = h('div', { class: 'rhead' });
@@ -29,6 +32,8 @@ export function renderTracks() {
   updateLoopUI();
   for (const el of rowsEl.querySelectorAll('.clip')) drawClip(el);
   rollSync();
+  ceSync();
+  warmUp();
 }
 
 function trackRow(t, i) {
@@ -73,13 +78,25 @@ function routeSelect(o, where) {
   return s;
 }
 
-const clipLabel = (t, c) => isMidi(c) ? `${getInstrument(t.inst?.type)?.name || 'MIDI'} · MIDI` : buffers.get(c.buf)?.name || 'Clip';
+function clipLabel(t, c) {
+  if (isMidi(c)) return `${getInstrument(t.inst?.type)?.name || 'MIDI'} · MIDI`;
+  const tags = [buffers.get(c.buf)?.name || 'Clip'];
+  if (Math.abs(c.rate - 1) > 1e-3) tags.push(c.rate.toFixed(2) + '×');
+  if (c.mode !== 'varispeed' && (c.pitch || c.cents)) tags.push(`${c.pitch + c.cents / 100 > 0 ? '+' : ''}${(c.pitch + c.cents / 100).toFixed(c.cents ? 2 : 0)} st`);
+  if (c.mode === 'varispeed' && Math.abs(c.rate - 1) > 1e-3) tags.push('tape');
+  if (c.reverse) tags.push('rev');
+  if (Math.abs(c.gain) > 0.05) tags.push(`${c.gain > 0 ? '+' : ''}${c.gain.toFixed(1)} dB`);
+  return tags.join(' · ');
+}
 function clipEl(t, c) {
   const el = h('div', {
     class: 'clip' + (isMidi(c) ? ' midi' : '') + (S.selClip === c.id ? ' sel' : ''),
     style: `--c:${t.color};left:${c.start * S.zoom}px;width:${Math.max(3, c.dur * S.zoom)}px`
   }, h('span', { class: 'cname' }, clipLabel(t, c)), h('canvas'),
-  h('i', { class: 'grip l' }), h('i', { class: 'grip r' }));
+  h('i', { class: 'grip l', title: isMidi(c) ? 'Drag to trim' : 'Drag to trim · Alt+drag to stretch' }),
+  h('i', { class: 'grip r', title: isMidi(c) ? 'Drag to trim' : 'Drag to trim · Alt+drag to stretch' }),
+  isMidi(c) ? null : h('i', { class: 'fh l', title: 'Drag to set the fade-in' }),
+  isMidi(c) ? null : h('i', { class: 'fh r', title: 'Drag to set the fade-out' }));
   el._clip = c; el._track = t;
   return el;
 }
@@ -94,15 +111,30 @@ function drawClip(el) {
   g.fillStyle = getComputedStyle(el).getPropertyValue('--c').trim() || '#ccc';
   if (isMidi(c)) { drawNotes(g, c, W, H); return; }
   const b = buffers.get(c.buf); if (!b) return;
-  const mid = H / 2, pk = b.peaks;
+  const f = fadesOf(el._track, c), gain = dbToGain(c.gain), mid = H / 2, pk = b.peaks, n = pk.length, spx = c.dur / c.rate / W;
   for (let x = 0; x < W; x++) {
-    const t0 = c.offset + (x / W) * c.dur, t1 = c.offset + ((x + 1) / W) * c.dur;
-    const i0 = Math.floor(t0 * PEAK_RATE), i1 = Math.max(i0 + 1, Math.ceil(t1 * PEAK_RATE));
+    const s0 = c.offset + x * spx, i0 = Math.floor(s0 * PEAK_RATE), i1 = Math.max(i0 + 1, Math.ceil((s0 + spx) * PEAK_RATE));
     let m = 0;
-    for (let i = i0; i < i1 && i < pk.length; i++) if (pk[i] > m) m = pk[i];
-    const a = Math.max(0.5, m * b.norm * mid * 0.92);
+    for (let i = i0; i < i1 && i < n; i++) { const v = pk[c.reverse ? n - 1 - i : i]; if (v > m) m = v; }
+    const a = clamp(m * b.norm * mid * 0.92 * gain * envAt(c, f, (x + 0.5) / W * c.dur), 0.5, mid);
     g.fillRect(x, mid - a, 1, a * 2);
   }
+  // Fades: shade above each fade curve
+  const shade = (x0, x1, y) => {
+    if (x1 - x0 < 1) return;
+    g.beginPath(); g.moveTo(x0, 0);
+    for (let x = x0; x <= x1; x++) g.lineTo(x, y(x));
+    g.lineTo(x1, 0); g.closePath();
+    g.fillStyle = 'rgba(8,9,12,.5)'; g.fill();
+    g.beginPath();
+    for (let x = x0; x <= x1; x++) x === x0 ? g.moveTo(x, y(x)) : g.lineTo(x, y(x));
+    g.strokeStyle = 'rgba(221,225,231,.7)'; g.lineWidth = dpr; g.stroke();
+  };
+  const fiW = Math.round(f.fi / c.dur * W), foW = Math.round(f.fo / c.dur * W);
+  shade(0, fiW, x => H * (1 - curveOf(f.si)(x / fiW)));
+  shade(W - foW, W, x => H * (1 - curveOf(f.so)((W - x) / foW)));
+  const fl = el.querySelector('.fh.l'), fr = el.querySelector('.fh.r');
+  if (fl) { fl.style.left = c.fadeIn * S.zoom + 'px'; fr.style.right = c.fadeOut * S.zoom + 'px'; }
 }
 
 // Mini piano roll inside a MIDI clip, scaled to the clip's pitch range.
@@ -159,9 +191,13 @@ function startClipDrag(e, el) {
   const c = el._clip, src = el._track;
   let dst = src, moved = false;
   S.selClip = c.id; S.selTrack = src.id; markSelection();
-  const mode = e.target.classList.contains('l') ? 'l' : e.target.classList.contains('r') ? 'r' : 'm';
-  const x0 = e.clientX, y0 = e.clientY, o = { start: c.start, offset: c.offset, dur: c.dur, off: c.off, beats: c.beats };
-  const midi = isMidi(c), minDur = midi ? spb() / 16 : 0.02;
+  const cl = e.target.classList, midi = isMidi(c), minDur = midi ? spb() / 16 : 0.02;
+  const mode = cl.contains('fh') ? (cl.contains('l') ? 'fi' : 'fo') : cl.contains('grip') ? (cl.contains('l') ? 'l' : 'r') : 'm';
+  const stretch = !midi && e.altKey && (mode === 'l' || mode === 'r');
+  const x0 = e.clientX, y0 = e.clientY;
+  const o = { start: c.start, offset: c.offset, dur: c.dur, off: c.off, beats: c.beats, rate: c.rate, fadeIn: c.fadeIn, fadeOut: c.fadeOut };
+  // Alt-drag stretch keeps the source audio and changes the rate, within MIN_RATE..MAX_RATE.
+  const durLo = midi ? 0 : o.dur / o.rate * MIN_RATE, durHi = midi ? 0 : o.dur / o.rate * MAX_RATE;
   const bufDur = midi ? Infinity : buffers.get(c.buf).buffer.duration;
   const onMove = ev => {
     if (!moved && Math.abs(ev.clientX - x0) < 3 && Math.abs(ev.clientY - y0) < 3) return;
@@ -176,23 +212,35 @@ function startClipDrag(e, el) {
         dst = trackById(under.dataset.id);
         under.append(el); el.style.setProperty('--c', dst.color); drawClip(el);
       }
+    } else if (mode === 'fi' || mode === 'fo') {
+      if (mode === 'fi') c.fadeIn = clamp(o.fadeIn + dt, 0, c.dur - c.fadeOut);
+      else c.fadeOut = clamp(o.fadeOut - dt, 0, c.dur - c.fadeIn);
     } else if (mode === 'r') {
       let ne = o.start + o.dur + dt;
       if (S.snap) ne = snapT(ne);
       if (midi) { c.beats = Math.max(minDur, ne - o.start) / spb(); c.dur = c.beats * spb(); }
-      else c.dur = clamp(ne - o.start, minDur, bufDur - o.offset);
+      else if (stretch) { c.dur = clamp(ne - o.start, durLo, durHi); c.rate = o.rate * c.dur / o.dur; }
+      else c.dur = clamp(ne - o.start, minDur, (bufDur - o.offset) * o.rate);
     } else {
       let ns = o.start + dt;
       if (S.snap) ns = snapT(ns);
-      ns = clamp(ns, midi ? 0 : Math.max(0, o.start - o.offset), o.start + o.dur - minDur);
-      const d = ns - o.start;
-      c.start = ns;
-      if (midi) { c.off = o.off + d / spb(); c.beats = o.beats - d / spb(); c.dur = c.beats * spb(); }
-      else { c.offset = o.offset + d; c.dur = o.dur - d; }
+      const end = o.start + o.dur;
+      if (stretch) {
+        ns = clamp(ns, Math.max(0, end - durHi), end - durLo);
+        c.start = ns; c.dur = end - ns; c.rate = o.rate * c.dur / o.dur;
+      } else {
+        ns = clamp(ns, midi ? 0 : Math.max(0, o.start - o.offset * o.rate), end - minDur);
+        const d = ns - o.start;
+        c.start = ns;
+        if (midi) { c.off = o.off + d / spb(); c.beats = o.beats - d / spb(); c.dur = c.beats * spb(); }
+        else { c.offset = o.offset + d / o.rate; c.dur = o.dur - d; }
+      }
     }
+    if (!midi) { c.fadeIn = Math.min(c.fadeIn, c.dur); c.fadeOut = Math.min(c.fadeOut, c.dur - c.fadeIn); }
     el.style.left = c.start * S.zoom + 'px';
     el.style.width = Math.max(3, c.dur * S.zoom) + 'px';
     if (mode !== 'm') drawClip(el);
+    if (stretch) status(`Stretch ${c.rate.toFixed(3)}× · ${(c.dur).toFixed(2)} s`);
   };
   const onUp = () => {
     window.removeEventListener('pointermove', onMove);
@@ -201,6 +249,9 @@ function startClipDrag(e, el) {
     el.classList.remove('drag');
     if (dst !== src) { src.clips.splice(src.clips.indexOf(c), 1); dst.clips.push(c); S.selTrack = dst.id; }
     if (moved) { renderTracks(); restartIfPlaying(); }
+    // A plain click opens the clip in its editor: audio in the Clip tab; MIDI if the piano roll is showing.
+    else if (!midi) editAudio(dst, c);
+    else if (S.mixerOpen && S.dockTab === 'roll') editClip(dst, c);
   };
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
@@ -227,6 +278,12 @@ rowsEl.addEventListener('dblclick', e => {
   renderAll(); editClip(t, c);
   status(`Added a MIDI clip on ${t.name}. Click in the piano roll to draw notes.`);
 });
+
+export function editAudio(t, c) {
+  S.selTrack = t.id; S.selClip = c.id; markSelection();
+  showDock('clip', false);
+  openClipEditor(t, c);
+}
 
 export function editClip(t, c) {
   S.selTrack = t.id; S.selClip = c.id; markSelection();
@@ -288,7 +345,9 @@ export function splitClip() {
     t.clips.push({ ...cloneClip(c), id: nid('c'), start: p, off: c.off + rel, beats: c.beats - rel, dur: c.dur - (p - c.start) });
     c.beats = rel;
   } else {
-    t.clips.push({ id: nid('c'), buf: c.buf, start: p, offset: c.offset + (p - c.start), dur: c.start + c.dur - p });
+    const at = p - c.start;
+    t.clips.push({ ...c, id: nid('c'), start: p, offset: c.offset + at / c.rate, dur: c.dur - at, fadeIn: 0, fadeOut: Math.min(c.fadeOut, c.dur - at) });
+    c.fadeOut = 0; c.fadeIn = Math.min(c.fadeIn, at);
   }
   c.dur = p - c.start;
   renderTracks(); restartIfPlaying();
@@ -415,17 +474,21 @@ export function fitZoom() {
   S.zoom = clamp((scroller.clientWidth - headW() - 24) / (span * 1.04), 10, 160);
   $('zoom').value = Math.round(S.zoom);
 }
-// The bottom dock holds the mixer and the piano roll. Pressing an open tab's button again closes the dock.
+// The bottom dock holds the mixer, the piano roll and the clip editor. Pressing an open tab's button again closes the dock.
+const DOCK = [['mixer', 'tabMixer', 'strips', 'bMixer'], ['roll', 'tabRoll', 'roll', 'bRoll'], ['clip', 'tabClip', 'cedit', 'bClip']];
 export function showDock(tab, toggle = true) {
   if (toggle && S.mixerOpen && S.dockTab === tab) S.mixerOpen = false;
   else { S.mixerOpen = true; S.dockTab = tab; }
   $('mixer').hidden = !S.mixerOpen;
-  $('strips').hidden = S.dockTab !== 'mixer';
-  $('roll').hidden = S.dockTab !== 'roll';
-  for (const [id, name] of [['tabMixer', 'mixer'], ['tabRoll', 'roll']]) $(id).setAttribute('aria-selected', String(S.dockTab === name));
-  $('bMixer').setAttribute('aria-pressed', String(S.mixerOpen && S.dockTab === 'mixer'));
-  $('bRoll').setAttribute('aria-pressed', String(S.mixerOpen && S.dockTab === 'roll'));
+  for (const [name, tabId, panel, btn] of DOCK) {
+    $(panel).hidden = S.dockTab !== name;
+    $(tabId).setAttribute('aria-selected', String(S.dockTab === name));
+    $(btn).setAttribute('aria-pressed', String(S.mixerOpen && S.dockTab === name));
+  }
+  $('rollTitle').hidden = S.dockTab !== 'roll';
+  $('ceTitle').hidden = S.dockTab !== 'clip';
   if (S.mixerOpen && S.dockTab === 'roll') { rollLayout(); rollDraw(); }
+  if (S.mixerOpen && S.dockTab === 'clip') { ceLayout(); ceDraw(); }
 }
 
 /* ---------- frame loop ---------- */

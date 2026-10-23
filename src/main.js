@@ -1,11 +1,15 @@
 import './style.css';
-import { S, nid, spb, snapT, fmtBars, trackById } from './state.js';
+import { S, spb, snapT, fmtBars, trackById } from './state.js';
 import { ctx, addBuffer, addTrack, addBus, makeReturn, newChannel, routeAll, applyAll } from './audio.js';
 import { events, play, stop, seek, restartIfPlaying, startEngine, position, T } from './engine.js';
 import {
   renderAll, renderTracks, updateLoopUI, setZoom, fitZoom, showDock,
   startFrameLoop, deleteClip, splitClip, duplicateClip, editClip
 } from './ui.js';
+import { setClipEditHook, ceRefresh } from './clipeditor.js';
+import { newAudioClip, setRate } from './clips.js';
+import { setStretchReady } from './stretch.js';
+import { isMidi } from './midi.js';
 import { rollKey, setRollEditHook } from './pianoroll.js';
 import { newMidiClip, syncMidiDurations } from './midi.js';
 import { newInstrumentState } from './instruments/index.js';
@@ -56,7 +60,7 @@ async function finishRecording() {
   takeN++;
   for (const t of recTracks) {
     const id = addBuffer(buf, `${t.name} take ${takeN}`);
-    const clip = { id: nid('c'), buf: id, start: startPos, offset: 0, dur: buf.duration };
+    const clip = newAudioClip(id, startPos, buf.duration);
     t.clips.push(clip);
     S.selClip = clip.id;
   }
@@ -90,14 +94,39 @@ $('bMixer').onclick = () => showDock('mixer');
 $('bRoll').onclick = () => showDock('roll');
 $('tabMixer').onclick = () => showDock('mixer', false);
 $('tabRoll').onclick = () => showDock('roll', false);
+$('bClip').onclick = () => showDock('clip');
+$('tabClip').onclick = () => showDock('clip', false);
 setRollEditHook(() => { renderTracks(); restartIfPlaying(); });
+// Clip editor knobs fire on every pointer move, so restart playback only once they settle.
+let restartTimer = 0;
+const restartSoon = () => { clearTimeout(restartTimer); restartTimer = setTimeout(restartIfPlaying, 120); };
+setClipEditHook(() => { renderTracks(); restartSoon(); });
+// When a stretch render finishes, swap it in for the varispeed stand-in.
+setStretchReady(() => { restartSoon(); ceRefresh(); });
+$('bTempoStretch').onclick = () => {
+  S.stretchTempo = !S.stretchTempo;
+  $('bTempoStretch').setAttribute('aria-pressed', String(S.stretchTempo));
+  status(S.stretchTempo ? 'Tempo changes will stretch audio clips to stay on the beat.' : 'Tempo changes will leave audio clips where they are in time.');
+};
 $('bpm').onchange = e => {
   const v = clamp(Math.round(+e.target.value || S.bpm), 40, 240);
   e.target.value = v;
-  const p = position();
+  let p = position();
+  const r = S.bpm / v;
+  if (S.stretchTempo && r !== 1) {
+    // Keep audio on the same bars and beats: move every clip, and stretch the ones that follow tempo.
+    for (const t of S.tracks) for (const c of t.clips) {
+      if (isMidi(c)) continue;
+      c.start *= r;
+      if (c.follow !== false) { setRate(c, c.rate * r); c.fadeIn *= r; c.fadeOut *= r; }
+    }
+    S.loopStart *= r; S.loopEnd *= r; S.pos *= r; S.playFrom *= r; p *= r;
+  }
   S.bpm = v; syncMidiDurations(); applyAll(); renderTracks();
   if (S.playing) startEngine(p);
-  status(`Tempo set to ${v} BPM. Clips keep their positions in time; the grid moves.`);
+  status(S.stretchTempo
+    ? `Tempo set to ${v} BPM. Audio clips were stretched to stay on the beat, keeping their pitch.`
+    : `Tempo set to ${v} BPM. Audio clips keep their positions in time; the grid moves.`);
 };
 $('zoom').oninput = e => setZoom(+e.target.value);
 $('recOffset').onchange = e => {
@@ -138,7 +167,7 @@ async function importFiles(files, track, at) {
       const id = addBuffer(buf, base);
       const t = track || addTrack(base.slice(0, 28));
       track = null;
-      t.clips.push({ id: nid('c'), buf: id, start: at, offset: 0, dur: buf.duration });
+      t.clips.push(newAudioClip(id, at, buf.duration));
       S.selTrack = t.id; n++;
     } catch {
       status(`Couldn't decode ${f.name}. Your browser may not support that format; try WAV or MP3.`, true);
@@ -170,6 +199,7 @@ function syncProjectUI() {
   $('bpm').value = S.bpm;
   $('bMetro').setAttribute('aria-pressed', String(S.metro));
   $('bSnap').setAttribute('aria-pressed', String(S.snap));
+  $('bTempoStretch').setAttribute('aria-pressed', String(S.stretchTempo));
   $('zoom').value = Math.round(S.zoom);
   renderAll();
 }
@@ -259,6 +289,7 @@ document.addEventListener('keydown', e => {
   else if (k === 'r') $('bRec').click();
   else if (k === 'm') showDock('mixer');
   else if (k === 'e') showDock('roll');
+  else if (k === 'w') showDock('clip');
   else if (k === 'l') $('bLoop').click();
   else if (k === 'c') $('bMetro').click();
   else if (e.key === 'Home') { e.preventDefault(); $('bHome').click(); }
